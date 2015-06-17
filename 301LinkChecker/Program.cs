@@ -72,7 +72,7 @@ namespace LinkChecker
             }
             if (!notRedirected.Any())
             {
-                Console.WriteLine("No requests that were not redirected!");
+                Console.WriteLine("All initial requests received a 301!");
             }
 
             LogFilePaths.Add(((FileStream)(log.BaseStream)).Name);
@@ -140,7 +140,7 @@ namespace LinkChecker
 
         private static List<UrlTransformResult> GetUrlResults(List<UrlTransform> UrlTransforms, bool AllowAutoRedirect)
         {
-            string CheckingType = (AllowAutoRedirect) ? "Matching target and actual urls...." : "301s....";
+            string CheckingType = (AllowAutoRedirect) ? "matching target and actual urls...." : "301s....";
             Console.WriteLine("Checking for " + CheckingType);
             var allResponses = new List<UrlTransformResult>();
             var allTasks = UrlTransforms.Select(async item =>
