@@ -24,11 +24,22 @@ namespace LinkChecker
             var TransformsFromFile = GetUrlTransformsFromFile();
             var results = GetUrlResults(TransformsFromFile, false);
 
-            var groupedResults = results.GroupBy(x => (int)x.Response.Result.StatusCode).ToList();
-            var notRedirected = groupedResults.Where(x => x.Key != 301);
-            var onlyRedirects = groupedResults.Where(x => x.Key == 301).FirstOrDefault();
-            LogErrorUrls(logStamp, notRedirected, results.Count);
-            LogRedirectedUrls(logStamp, onlyRedirects, results.Count);
+            IEnumerable<IGrouping<int, UrlTransformResult>> groupedResults = null;
+            try
+            {
+                groupedResults = results.GroupBy(x => (int)x.Response.Result.StatusCode).ToList();
+            }
+            catch (System.AggregateException AgEx)
+            {
+                RecurseInnerExceptions(AgEx);
+            }
+            if (groupedResults != null)
+            {
+                var initialRedirectErrors = groupedResults.Where(x => x.Key != 301);
+                var initialRedirectSuccesses = groupedResults.Where(x => x.Key == 301).FirstOrDefault();
+                LogErrorUrls(logStamp, initialRedirectErrors, results.Count);
+                LogRedirectedUrls(logStamp, initialRedirectSuccesses, results.Count);
+            }
             Console.WriteLine("Opening log files......");
             foreach (string LogFilePath in LogFilePaths)
             {
@@ -40,7 +51,7 @@ namespace LinkChecker
 
         private static void LogErrorUrls(DateTime logStamp, IEnumerable<System.Linq.IGrouping<int, UrlTransformResult>> notRedirected, int TotalRequests)
         {
-            var log = CreateLog(logStamp, "Errors");
+            var log = CreateLog(logStamp, "InitialRedirectErrors");
             log.WriteLine("Old Url, Target Url, Response Code");
             foreach (var group in notRedirected)
             {
@@ -57,48 +68,67 @@ namespace LinkChecker
 
                 }
                 
-                log.WriteLine("Total results with response code " + group.Key + " = " + group.Count().ToString());
+                Console.WriteLine("Total initial requests with response code " + group.Key + " = " + group.Count().ToString());
             }
-            if (notRedirected.Any())
-            {
-                Console.WriteLine("Total Requests = " + TotalRequests.ToString());
-            }
-            else
+            if (!notRedirected.Any())
             {
                 Console.WriteLine("No requests that were not redirected!");
+            }
+
+            LogFilePaths.Add(((FileStream)(log.BaseStream)).Name);
+            log.Close();
+        }
+
+        private static void LogRedirectedUrls(DateTime logStamp, System.Linq.IGrouping<int, UrlTransformResult> initialRedirectSuccesses, int TotalRequests)
+        {
+            var log = CreateLog(logStamp, "Redirects");
+            log.WriteLine("Old Url, Target Url, Actual Url, Response Code, Redirect Same as Target");
+            List<UrlTransform> ThreeOOnes = initialRedirectSuccesses.Select(x => new UrlTransform { OldUrl = x.SourceUrls.OldUrl, NewUrl = x.SourceUrls.NewUrl }).ToList();
+
+            IEnumerable<UrlTransformResult> redirectResults = new List<UrlTransformResult>();
+            try
+            {
+                redirectResults = GetUrlResults(ThreeOOnes, true).OrderBy(x => (int)x.Response.Result.StatusCode);
+            }
+            catch(System.AggregateException AgEx)
+            {
+                RecurseInnerExceptions(AgEx);
+            }
+            
+            if (redirectResults.Any())
+            {
+                foreach (var result in redirectResults)
+                {
+                    if (result.Response.IsCanceled || result.Response.IsFaulted)
+                    {
+                        log.WriteLine(String.Format("<<<<<<< ERROR {0} >>>>>>>", result.SourceUrls.OldUrl));
+                    }
+                    else
+                    {
+                        bool NewUrlAndActualRedirectUrlMatch = (result.Response.Result.RequestMessage.RequestUri.LocalPath.ToLower() == result.SourceUrls.NewUrl.ToLower());
+                        log.WriteLine(String.Format("{0},{1},{2},{3},{4}", result.SourceUrls.OldUrl, result.SourceUrls.NewUrl, result.Response.Result.RequestMessage.RequestUri.LocalPath, (int)result.Response.Result.StatusCode, NewUrlAndActualRedirectUrlMatch.ToString()));
+                    }
+
+                }
+                Console.WriteLine("Total Requests = " + TotalRequests.ToString());
+                var FailedRequests = redirectResults.GroupBy(x => (int)x.Response.Result.StatusCode).ToList();
+                Console.WriteLine("Request summary:");
+                foreach (var group in FailedRequests)
+                {
+                    Console.WriteLine("\tResponse code: " + group.Key + " (" + group.Count().ToString() + ")");
+                }
             }
             LogFilePaths.Add(((FileStream)(log.BaseStream)).Name);
             log.Close();
         }
 
-        private static void LogRedirectedUrls(DateTime logStamp, System.Linq.IGrouping<int, UrlTransformResult> onlyRedirects, int TotalRequests)
+        private static void RecurseInnerExceptions(Exception AgEx)
         {
-            var log = CreateLog(logStamp, "Redirects");
-            log.WriteLine("Old Url, Target Url, Response Code, Redirect Same as Target");
-            int SuccessCounter = 0;
-            List<UrlTransform> ThreeOOnes = onlyRedirects.Select(x => new UrlTransform { OldUrl = x.SourceUrls.OldUrl, NewUrl = x.SourceUrls.NewUrl }).ToList();
-            var redirectResults = GetUrlResults(ThreeOOnes, true);
-            foreach (var result in redirectResults)
+            while (AgEx != null)
             {
-                if (result.Response.IsCanceled || result.Response.IsFaulted)
-                {
-                    log.WriteLine(String.Format("<<<<<<< ERROR {0} >>>>>>>", result.SourceUrls.OldUrl));
-                }
-                else
-                {
-                    bool NewUrlAndActualRedirectUrlMatch = (result.Response.Result.RequestMessage.RequestUri.LocalPath.ToLower() == result.SourceUrls.NewUrl.ToLower());
-                    if (NewUrlAndActualRedirectUrlMatch)
-                    {
-                        SuccessCounter++;
-                    }
-                    log.WriteLine(String.Format("{0},{1},{2},{3}", result.SourceUrls.OldUrl, result.SourceUrls.NewUrl, (int)result.Response.Result.StatusCode, NewUrlAndActualRedirectUrlMatch.ToString()));
-                }
-
+                Console.WriteLine(AgEx.Message);
+                AgEx = AgEx.InnerException;
             }
-            Console.WriteLine("Total Requests = " + TotalRequests.ToString());
-            Console.WriteLine("Successful redirect count = " + SuccessCounter.ToString());
-            LogFilePaths.Add(((FileStream)(log.BaseStream)).Name);
-            log.Close();
         }
 
         private static StreamWriter CreateLog(DateTime logStamp, string LogFileSuffix)
@@ -110,6 +140,8 @@ namespace LinkChecker
 
         private static List<UrlTransformResult> GetUrlResults(List<UrlTransform> UrlTransforms, bool AllowAutoRedirect)
         {
+            string CheckingType = (AllowAutoRedirect) ? "Matching target and actual urls...." : "301s....";
+            Console.WriteLine("Checking for " + CheckingType);
             var allResponses = new List<UrlTransformResult>();
             var allTasks = UrlTransforms.Select(async item =>
             {
@@ -125,7 +157,8 @@ namespace LinkChecker
         {
             var handler = new HttpClientHandler()
             {
-                AllowAutoRedirect = AllowAutoRedirect
+                AllowAutoRedirect = AllowAutoRedirect,
+                 
             };
             using (var client = new HttpClient(handler))
             {
